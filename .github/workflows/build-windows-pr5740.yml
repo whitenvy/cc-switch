@@ -1,0 +1,127 @@
+name: Build Windows x64 - PR 5740
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch or commit to build
+        required: true
+        default: cloud-build/pr5740-20260729
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-pr5740-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Windows x64 MSI
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    env:
+      UPSTREAM_MAIN_SHA: 56fb46c09310ff52dabefd2b32f0e799e8357d9e
+      UPSTREAM_PR_HEAD_SHA: b9b4a9c4ed60f80509a087f6512170817bd92f7d
+      PERSONAL_BUILD_VERSION: 3.18.5740
+
+    steps:
+      - name: Checkout patched branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+
+      - name: Verify recorded source ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor $env:UPSTREAM_MAIN_SHA HEAD
+          git log --oneline --decorate -4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.12.3
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: pwsh
+        run: |
+          "path=$(pnpm store path --silent)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Restore pnpm cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: windows-x64-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            windows-x64-pnpm-
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95'
+          components: rustfmt, clippy
+
+      - name: Restore Rust cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: windows-x64-rust-${{ hashFiles('src-tauri/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            windows-x64-rust-${{ hashFiles('src-tauri/Cargo.lock', 'rust-toolchain.toml') }}-
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build personal Windows x64 MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $config = '{"version":"' + $env:PERSONAL_BUILD_VERSION + '","bundle":{"createUpdaterArtifacts":false}}'
+          pnpm tauri build --bundles msi --config $config
+
+      - name: Prepare verified artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msiFiles = @(Get-ChildItem -Path 'src-tauri/target/release/bundle/msi/*.msi' -File)
+          if ($msiFiles.Count -ne 1) {
+            throw "Expected exactly one MSI, found $($msiFiles.Count)"
+          }
+
+          New-Item -ItemType Directory -Path 'release-artifact' -Force | Out-Null
+          $msi = $msiFiles[0]
+          Copy-Item -LiteralPath $msi.FullName -Destination 'release-artifact'
+
+          $copiedMsi = Join-Path 'release-artifact' $msi.Name
+          $hash = Get-FileHash -LiteralPath $copiedMsi -Algorithm SHA256
+          "$($hash.Hash) *$($msi.Name)" | Set-Content -Path 'release-artifact/SHA256SUMS.txt' -Encoding ascii
+
+          @(
+            "build_commit=$(git rev-parse HEAD)"
+            "upstream_main=$env:UPSTREAM_MAIN_SHA"
+            "upstream_pr_5740_head=$env:UPSTREAM_PR_HEAD_SHA"
+            "source_ref=${{ inputs.source_ref }}"
+            "version=$env:PERSONAL_BUILD_VERSION"
+          ) | Set-Content -Path 'release-artifact/BUILD-SOURCE.txt' -Encoding ascii
+
+      - name: Upload MSI and verification files
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-switch-windows-x64-pr5740
+          path: release-artifact/*
+          if-no-files-found: error
+          retention-days: 14
