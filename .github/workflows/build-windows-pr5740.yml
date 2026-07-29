@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Branch or commit to build
         required: true
-        default: cloud-build/pr5740-20260729
+        default: cloud-build/v3.18.0-pr5740-20260729
         type: string
 
 permissions:
@@ -18,12 +18,12 @@ concurrency:
 
 jobs:
   build-windows:
-    name: Windows x64 MSI and Portable
+    name: Windows x64 MSI
     runs-on: windows-2022
     timeout-minutes: 90
 
     env:
-      UPSTREAM_MAIN_SHA: 56fb46c09310ff52dabefd2b32f0e799e8357d9e
+      UPSTREAM_MAIN_SHA: 606e7bbe75db7f8285f7a3be006fac22b5d22796
       UPSTREAM_PR_HEAD_SHA: b9b4a9c4ed60f80509a087f6512170817bd92f7d
       PERSONAL_BUILD_VERSION: 3.18.5740
 
@@ -107,34 +107,9 @@ jobs:
           $msiName = "CC-Switch-$env:PERSONAL_BUILD_VERSION-Windows.msi"
           Copy-Item -LiteralPath $msi.FullName -Destination (Join-Path 'release-artifact' $msiName)
 
-          $exeCandidates = @(
-            'src-tauri/target/release/cc-switch.exe',
-            'src-tauri/target/x86_64-pc-windows-msvc/release/cc-switch.exe'
-          )
-          $exePath = $exeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if ($null -eq $exePath) {
-            throw 'Portable cc-switch.exe not found'
-          }
-
-          $portableDir = 'release-artifact/CC-Switch-Portable'
-          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
-          Copy-Item -LiteralPath $exePath -Destination $portableDir
-          @(
-            '# CC Switch portable build marker'
-            'portable=true'
-          ) | Set-Content -Path (Join-Path $portableDir 'portable.ini') -Encoding utf8
-
-          $portableName = "CC-Switch-$env:PERSONAL_BUILD_VERSION-Windows-Portable.zip"
-          Compress-Archive -Path "$portableDir/*" -DestinationPath (Join-Path 'release-artifact' $portableName) -Force
-          Remove-Item -LiteralPath $portableDir -Recurse -Force
-
-          Get-ChildItem -Path 'release-artifact' -File |
-            Where-Object { $_.Extension -in '.msi', '.zip' } |
-            Sort-Object Name |
-            ForEach-Object {
-              $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
-              "$($hash.Hash) *$($_.Name)"
-            } | Set-Content -Path 'release-artifact/SHA256SUMS.txt' -Encoding ascii
+          $copiedMsi = Join-Path 'release-artifact' $msiName
+          $hash = Get-FileHash -LiteralPath $copiedMsi -Algorithm SHA256
+          "$($hash.Hash) *$msiName" | Set-Content -Path 'release-artifact/SHA256SUMS.txt' -Encoding ascii
 
           @(
             "build_commit=$(git rev-parse HEAD)"
@@ -144,7 +119,7 @@ jobs:
             "version=$env:PERSONAL_BUILD_VERSION"
           ) | Set-Content -Path 'release-artifact/BUILD-SOURCE.txt' -Encoding ascii
 
-      - name: Upload MSI, Portable ZIP, and verification files
+      - name: Upload MSI and verification files
         uses: actions/upload-artifact@v7
         with:
           name: cc-switch-windows-x64-pr5740
